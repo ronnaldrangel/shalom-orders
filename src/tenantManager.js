@@ -19,6 +19,7 @@ class TenantManager {
   constructor() {
     this.instances = new Map();
     this.initialized = false;
+    this.browser = null;
   }
 
   // Initialize and restore sessions from database
@@ -28,6 +29,14 @@ class TenantManager {
     console.log('Initializing TenantManager...');
 
     try {
+      if (!this.browser) {
+        console.log('Launching shared browser instance...');
+        this.browser = await chromium.launch({
+          headless: process.env.HEADLESS !== 'false',
+          args: ['--no-sandbox', '--disable-setuid-sandbox']
+        });
+      }
+
       const db = getPrisma();
       const dbInstances = await db.instance.findMany({
         where: { isActive: true }
@@ -57,27 +66,28 @@ class TenantManager {
   }
 
   async _restoreInstance(dbInstance) {
-    const browser = await chromium.launch({
-      headless: false,
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
-    });
+    if (!this.browser) await this.initialize();
 
     let context;
 
     if (dbInstance.storageState) {
       try {
         const storageState = JSON.parse(dbInstance.storageState);
-        context = await browser.newContext({ storageState });
+        context = await this.browser.newContext({ storageState });
         console.log(`Restored storage state for instance ${dbInstance.id}`);
       } catch (error) {
         console.error('Failed to parse storage state, creating new context');
-        context = await browser.newContext();
+        context = await this.browser.newContext();
       }
     } else {
-      context = await browser.newContext();
+      context = await this.browser.newContext();
     }
 
     const page = await context.newPage();
+    
+    // Optimize: Block unnecessary resources
+    await page.route('**/*.{png,jpg,jpeg,gif,svg,css,woff,woff2}', route => route.abort());
+
     page.setDefaultTimeout(15000);
     page.setDefaultNavigationTimeout(20000);
 
@@ -90,7 +100,6 @@ class TenantManager {
     this.instances.set(dbInstance.apiKey, {
       id: dbInstance.id,
       apiKey: dbInstance.apiKey,
-      browser,
       context,
       page,
       createdAt: dbInstance.createdAt,
@@ -480,10 +489,15 @@ class TenantManager {
     for (const [apiKey, instance] of this.instances) {
       try {
         await this._saveStorageState(apiKey);
-        await instance.browser.close();
+        await instance.context.close();
       } catch (error) {
         console.error(`Error closing instance ${instance.id}:`, error.message);
       }
+    }
+    
+    if (this.browser) {
+      await this.browser.close();
+      this.browser = null;
     }
 
     const db = getPrisma();

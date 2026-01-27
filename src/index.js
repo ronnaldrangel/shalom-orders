@@ -460,6 +460,11 @@ const start = async () => {
     // Initialize tenant manager (restore sessions from DB)
     await tenantManager.initialize();
 
+    // Register shutdown hook
+    fastify.addHook('onClose', async () => {
+      await tenantManager.shutdown();
+    });
+
     const port = process.env.PORT || 3000;
     await fastify.listen({ port });
     console.log(`Server listening on ${fastify.server.address().port}`);
@@ -468,7 +473,6 @@ const start = async () => {
     // Graceful shutdown handlers
     const shutdown = async (signal) => {
       console.log(`\n${signal} received. Shutting down gracefully...`);
-      await tenantManager.shutdown();
       await fastify.close();
       process.exit(0);
     };
