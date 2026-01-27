@@ -1,0 +1,22 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Instance {
+  id           String   @id @default(uuid())
+  apiKey       String   @unique
+  username     String?
+  storageState String?  @db.Text // JSON string with cookies and localStorage
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  lastUsedAt   DateTime @default(now())
+
+  @@map("instances")
+}
