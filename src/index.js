@@ -41,6 +41,15 @@ const buildApp = async () => {
     }
   });
 
+  // Route: Health Check
+  fastify.get('/', async (request, reply) => {
+    return { status: 'ok', uptime: process.uptime() };
+  });
+
+  fastify.get('/health', async (request, reply) => {
+    return { status: 'ok', uptime: process.uptime() };
+  });
+
   // Middleware to check Admin API Key only
   const checkAdminApiKey = async (request, reply) => {
     const apiKey = request.headers['x-api-key'];
