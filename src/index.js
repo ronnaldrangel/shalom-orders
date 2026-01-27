@@ -1,8 +1,22 @@
 require('dotenv').config();
+const { shipmentQueue, setupWorker, connection, queueEvents } = require('./queue');
 
 const buildApp = async () => {
   const fastify = require('fastify')({ logger: true });
   const tenantManager = require('./tenantManager');
+
+  // Register Redis
+  await fastify.register(require('@fastify/redis'), { 
+    url: process.env.REDIS_URL 
+  });
+
+  // Register Rate Limit
+  await fastify.register(require('@fastify/rate-limit'), {
+    max: 100,
+    timeWindow: '1 minute',
+    redis: fastify.redis, // @fastify/redis instance
+    keyGenerator: (req) => req.headers['x-api-key'] || req.ip
+  });
 
   // Register Swagger
   await fastify.register(require('@fastify/swagger'), {
@@ -444,7 +458,15 @@ const buildApp = async () => {
     }
 
     try {
-      const result = await tenantManager.registerShipment(request.instance.apiKey, shipmentData);
+      // Add to queue for concurrency management
+      const job = await shipmentQueue.add('register', { 
+        apiKey: request.instance.apiKey, 
+        shipmentData 
+      });
+
+      // Wait for job completion to maintain synchronous API contract
+      // Timeout 2 minutes
+      const result = await job.waitUntilFinished(queueEvents, 120000);
 
       if (!result.success) {
         reply.code(400).send(result);
@@ -454,7 +476,8 @@ const buildApp = async () => {
       return result;
     } catch (err) {
       request.log.error(err);
-      reply.code(500).send({ error: 'Shipment registration failed', details: err.message });
+      const message = err.message || 'Shipment registration failed';
+      reply.code(500).send({ error: message, details: err.message });
     }
   });
 
@@ -465,6 +488,9 @@ const start = async () => {
   try {
     const fastify = await buildApp();
     const tenantManager = require('./tenantManager');
+
+    // Start Queue Worker
+    setupWorker();
 
     // Initialize tenant manager (restore sessions from DB)
     await tenantManager.initialize();
