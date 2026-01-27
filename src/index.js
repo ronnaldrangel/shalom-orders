@@ -177,7 +177,7 @@ const buildApp = async () => {
   fastify.post('/status', {
     preHandler: checkApiKey,
     schema: {
-      tags: ['Instances'],
+      tags: ['Authentication'],
       summary: 'Obtener estado de instancia',
       description: 'Verifica el estado de autenticación de una instancia.',
       security: [{ ApiKeyAuth: [] }],
