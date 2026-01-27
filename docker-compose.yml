@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - DATABASE_URL=${DATABASE_URL}
+      - ADMIN_API_KEY=${ADMIN_API_KEY}
+      - HEADLESS=true
+    volumes:
+      # Opcional: Persistir logs o datos si fuera necesario
+      - ./logs:/app/logs
+    restart: unless-stopped
