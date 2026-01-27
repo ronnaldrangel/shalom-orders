@@ -1,18 +1,16 @@
 const { chromium } = require('playwright');
 const { v4: uuidv4 } = require('uuid');
 const { PrismaClient } = require('@prisma/client');
+const { Pool } = require('pg');
+const { PrismaPg } = require('@prisma/adapter-pg');
 
 // Lazy initialization of Prisma client
 let prisma = null;
 const getPrisma = () => {
   if (!prisma) {
-    prisma = new PrismaClient({
-      datasources: {
-        db: {
-          url: process.env.DATABASE_URL
-        }
-      }
-    });
+    const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+    const adapter = new PrismaPg(pool);
+    prisma = new PrismaClient({ adapter });
   }
   return prisma;
 };
