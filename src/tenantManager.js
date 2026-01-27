@@ -166,6 +166,19 @@ class TenantManager {
   async createInstance() {
     await this.initialize();
 
+    if (!this.browser) {
+      // Ensure browser is launched if initialize didn't do it (though it should)
+      console.log('Browser not ready, launching...');
+      this.browser = await chromium.launch({
+        headless: process.env.HEADLESS !== 'false',
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage'
+        ]
+      });
+    }
+
     const apiKey = uuidv4();
     const id = uuidv4();
 
@@ -180,13 +193,11 @@ class TenantManager {
       }
     });
 
-    const browser = await chromium.launch({
-      headless: false,
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
-    });
-
-    const context = await browser.newContext();
+    const context = await this.browser.newContext();
     const page = await context.newPage();
+
+    // Optimize: Block unnecessary resources
+    await page.route('**/*.{png,jpg,jpeg,gif,svg,css,woff,woff2}', route => route.abort());
 
     page.setDefaultTimeout(15000);
     page.setDefaultNavigationTimeout(20000);
@@ -197,7 +208,6 @@ class TenantManager {
     this.instances.set(apiKey, {
       id,
       apiKey,
-      browser,
       context,
       page,
       createdAt: new Date(),
@@ -335,14 +345,25 @@ class TenantManager {
 
     const instance = this.getInstance(apiKey);
     if (instance) {
-      await instance.browser.close();
+      try {
+        if (instance.context) {
+          await instance.context.close();
+        }
+      } catch (error) {
+        console.error(`Error closing context for instance ${instance.id}:`, error.message);
+      }
+      
       this.instances.delete(apiKey);
 
       const db = getPrisma();
-      await db.instance.update({
-        where: { apiKey },
-        data: { isActive: false }
-      });
+      try {
+        await db.instance.update({
+          where: { apiKey },
+          data: { isActive: false }
+        });
+      } catch (error) {
+        console.error(`Error updating DB for instance ${instance.id}:`, error.message);
+      }
 
       return true;
     }
