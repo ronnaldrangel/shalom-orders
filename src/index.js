@@ -28,8 +28,7 @@ const buildApp = async () => {
       tags: [
         { name: 'Instances', description: 'Gestión de instancias de navegador' },
         { name: 'Authentication', description: 'Login y logout de sesiones' },
-        { name: 'Shipments', description: 'Registro de envíos' },
-        { name: 'Health', description: 'Verificación de estado del servidor' }
+        { name: 'Shipments', description: 'Registro de envíos' }
       ]
     }
   });
@@ -45,37 +44,7 @@ const buildApp = async () => {
   // Route: Health Check
   fastify.get('/', {
     schema: {
-      tags: ['Health'],
-      summary: 'Verificar estado',
-      description: 'Comprueba que el servidor esté activo.',
-      response: {
-        200: {
-          type: 'object',
-          properties: {
-            status: { type: 'string' },
-            uptime: { type: 'number' }
-          }
-        }
-      }
-    }
-  }, async (request, reply) => {
-    return { status: 'ok', uptime: process.uptime() };
-  });
-
-  fastify.get('/health', {
-    schema: {
-      tags: ['Health'],
-      summary: 'Verificar estado (Health)',
-      description: 'Endpoint dedicado para verificación de salud.',
-      response: {
-        200: {
-          type: 'object',
-          properties: {
-            status: { type: 'string' },
-            uptime: { type: 'number' }
-          }
-        }
-      }
+      hide: true
     }
   }, async (request, reply) => {
     return { status: 'ok', uptime: process.uptime() };
