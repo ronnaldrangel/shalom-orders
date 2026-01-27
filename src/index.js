@@ -2,8 +2,23 @@ require('dotenv').config();
 const fastify = require('fastify')({ logger: true });
 const tenantManager = require('./tenantManager');
 
-// Route to create a new instance (Tenant)
-fastify.post('/instances', async (request, reply) => {
+// Middleware to check Admin API Key only
+const checkAdminApiKey = async (request, reply) => {
+  const apiKey = request.headers['x-api-key'];
+  if (!apiKey) {
+    reply.code(401).send({ error: 'Missing x-api-key header' });
+    return;
+  }
+
+  const adminApiKey = process.env.ADMIN_API_KEY;
+  if (!adminApiKey || apiKey !== adminApiKey) {
+    reply.code(403).send({ error: 'Invalid Admin API Key' });
+    return;
+  }
+};
+
+// Route to create a new instance (Tenant) - Protected by Admin API Key
+fastify.post('/instances', { preHandler: checkAdminApiKey }, async (request, reply) => {
   try {
     const { apiKey, id } = await tenantManager.createInstance();
     return { status: 'created', apiKey, instanceId: id, message: 'Instance created and browser opened' };
@@ -13,8 +28,8 @@ fastify.post('/instances', async (request, reply) => {
   }
 });
 
-// Route to list instances (For debugging/management)
-fastify.get('/instances', async (request, reply) => {
+// Route to list instances (For debugging/management) - Protected by Admin API Key
+fastify.get('/instances', { preHandler: checkAdminApiKey }, async (request, reply) => {
   const instances = tenantManager.listInstances();
   return { instances };
 });

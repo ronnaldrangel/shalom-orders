@@ -87,11 +87,11 @@ Cuando usas la Admin API Key:
 - Debes enviar el `instanceId` en el body para indicar qué instancia quieres controlar
 - Puedes controlar cualquier instancia activa
 
-### Endpoints públicos (sin autenticación):
+### Endpoints protegidos con Admin API Key:
 - `POST /instances` - Crear instancia
 - `GET /instances` - Listar instancias
 
-### Endpoints protegidos (requieren API Key o Admin API Key):
+### Endpoints protegidos (requieren API Key de instancia o Admin API Key):
 - `POST /status` - Obtener estado
 - `POST /login` - Iniciar sesión
 - `POST /logout` - Cerrar sesión
@@ -109,8 +109,13 @@ Crea una nueva instancia de navegador y navega a la página de login de Shalom P
 POST /instances
 ```
 
+#### Headers
+| Header      | Tipo   | Requerido | Descripción              |
+|-------------|--------|-----------|---------------------------|
+| x-api-key   | string | ✅        | Admin API Key             |
+
 #### Request
-No requiere body ni headers especiales.
+No requiere body.
 
 #### Response (200 OK)
 ```json
@@ -139,8 +144,13 @@ Devuelve todas las instancias activas (útil para debugging/administración).
 GET /instances
 ```
 
+#### Headers
+| Header      | Tipo   | Requerido | Descripción              |
+|-------------|--------|-----------|---------------------------|
+| x-api-key   | string | ✅        | Admin API Key             |
+
 #### Request
-No requiere body ni headers especiales.
+No requiere body.
 
 #### Response (200 OK)
 ```json
