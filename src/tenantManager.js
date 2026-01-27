@@ -33,7 +33,11 @@ class TenantManager {
         console.log('Launching shared browser instance...');
         this.browser = await chromium.launch({
           headless: process.env.HEADLESS !== 'false',
-          args: ['--no-sandbox', '--disable-setuid-sandbox']
+          args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage' // Crucial for Docker environments
+          ]
         });
       }
 

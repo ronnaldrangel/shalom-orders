@@ -25,5 +25,6 @@ ENV PORT=3000
 ENV HEADLESS=true
 ENV NODE_ENV=production
 
-# Comando para iniciar la aplicación
-CMD ["npm", "start"]
+# Comando para iniciar la aplicación directamente con Node
+# Esto mejora el manejo de señales y reduce el uso de memoria (evita un proceso extra de npm)
+CMD ["node", "src/index.js"]
