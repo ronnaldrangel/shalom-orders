@@ -20,16 +20,18 @@ class TenantManager {
     this.instances = new Map();
     this.initialized = false;
     this.browser = null;
+    this.isShuttingDown = false;
   }
 
   // Initialize and restore sessions from database
   async initialize() {
-    if (this.initialized) return;
+    if (this.initialized || this.isShuttingDown) return;
 
     console.log('Initializing TenantManager...');
 
     try {
       if (!this.browser) {
+        if (this.isShuttingDown) return;
         console.log('Launching shared browser instance...');
         this.browser = await chromium.launch({
           headless: process.env.HEADLESS !== 'false',
@@ -49,22 +51,33 @@ class TenantManager {
       console.log(`Found ${dbInstances.length} active instances in database`);
 
       for (const dbInstance of dbInstances) {
+        if (this.isShuttingDown) {
+          console.log('Initialization aborted due to shutdown');
+          break;
+        }
         try {
           await this._restoreInstance(dbInstance);
           console.log(`Restored instance ${dbInstance.id}`);
         } catch (error) {
           console.error(`Failed to restore instance ${dbInstance.id}:`, error.message);
-          await db.instance.update({
-            where: { id: dbInstance.id },
-            data: { isActive: false }
-          });
+          // Only update DB if not shutting down, to avoid DB connection errors
+          if (!this.isShuttingDown) {
+            await db.instance.update({
+              where: { id: dbInstance.id },
+              data: { isActive: false }
+            });
+          }
         }
       }
 
       this.initialized = true;
-      console.log('TenantManager initialized successfully');
+      if (!this.isShuttingDown) {
+        console.log('TenantManager initialized successfully');
+      }
     } catch (error) {
-      console.error('TenantManager initialization error:', error.message);
+      if (!this.isShuttingDown) {
+        console.error('TenantManager initialization error:', error.message);
+      }
       this.initialized = true;
     }
   }
@@ -128,6 +141,9 @@ class TenantManager {
     const instance = this.getInstance(apiKey);
     if (!instance) return;
 
+    // Don't try to save state if context is closed or we are shutting down abruptly
+    if (this.isShuttingDown && (!instance.context || !instance.context.browser())) return;
+
     try {
       const storageState = await instance.context.storageState();
       const db = getPrisma();
@@ -140,7 +156,10 @@ class TenantManager {
       });
       console.log(`Saved storage state for instance ${instance.id}`);
     } catch (error) {
-      console.error('Failed to save storage state:', error.message);
+      // Ignore errors if shutting down
+      if (!this.isShuttingDown && !error.message.includes('Target page, context or browser has been closed')) {
+        console.error('Failed to save storage state:', error.message);
+      }
     }
   }
 
