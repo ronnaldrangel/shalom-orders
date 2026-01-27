@@ -74,7 +74,7 @@ const buildApp = async () => {
         return;
       }
 
-      const allInstances = tenantManager.listInstances();
+      const allInstances = await tenantManager.listInstances();
       const instanceData = allInstances.find(i => i.id === instanceId);
       if (!instanceData) {
         reply.code(404).send({ error: 'Instance not found' });
@@ -169,7 +169,7 @@ const buildApp = async () => {
       }
     }
   }, async (request, reply) => {
-    const instances = tenantManager.listInstances();
+    const instances = await tenantManager.listInstances();
     return { instances };
   });
 
