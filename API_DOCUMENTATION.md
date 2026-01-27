@@ -74,12 +74,25 @@ x-api-key: <tu-api-key>
 
 > ⚠️ La API Key se genera automáticamente al crear una instancia y es única para cada una.
 
+### Admin API Key
+
+Existe una **Admin API Key** configurada en el archivo `.env` que permite acceso a **cualquier instancia** sin necesidad de usar la API Key específica de esa instancia.
+
+```env
+ADMIN_API_KEY=admin-shalom-secret-key-2026
+```
+
+Cuando usas la Admin API Key:
+- Solo necesitas el header `x-api-key` con la Admin API Key
+- Debes enviar el `instanceId` en el body para indicar qué instancia quieres controlar
+- Puedes controlar cualquier instancia activa
+
 ### Endpoints públicos (sin autenticación):
 - `POST /instances` - Crear instancia
 - `GET /instances` - Listar instancias
 
-### Endpoints protegidos (requieren API Key):
-- `GET /status` - Obtener estado
+### Endpoints protegidos (requieren API Key o Admin API Key):
+- `POST /status` - Obtener estado
 - `POST /login` - Iniciar sesión
 - `POST /logout` - Cerrar sesión
 - `DELETE /instances` - Eliminar instancia
@@ -154,13 +167,25 @@ No requiere body ni headers especiales.
 Verifica el estado de autenticación de una instancia.
 
 ```http
-GET /status
+POST /status
 ```
 
 #### Headers
 | Header      | Tipo   | Requerido | Descripción              |
 |-------------|--------|-----------|--------------------------|
 | x-api-key   | string | ✅        | API Key de la instancia  |
+
+#### Body (JSON)
+| Campo      | Tipo   | Requerido | Descripción                        |
+|------------|--------|-----------|------------------------------------|
+| instanceId | string | ✅        | ID de la instancia                 |
+
+#### Ejemplo de Request
+```json
+{
+  "instanceId": "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+}
+```
 
 #### Response (200 OK) - Usuario autenticado
 ```json
@@ -210,15 +235,17 @@ POST /login
 | x-api-key   | string | ✅        | API Key de la instancia  |
 
 #### Body (JSON)
-| Campo    | Tipo   | Requerido | Default | Descripción                           |
-|----------|--------|-----------|---------|---------------------------------------|
-| username | string | ✅        | -       | Usuario/Email para iniciar sesión     |
-| password | string | ✅        | -       | Contraseña del usuario                |
-| retries  | number | ❌        | 3       | Número de reintentos en caso de fallo |
+| Campo      | Tipo   | Requerido | Default | Descripción                           |
+|------------|--------|-----------|---------|---------------------------------------|
+| instanceId | string | ✅        | -       | ID de la instancia                    |
+| username   | string | ✅        | -       | Usuario/Email para iniciar sesión     |
+| password   | string | ✅        | -       | Contraseña del usuario                |
+| retries    | number | ❌        | 3       | Número de reintentos en caso de fallo |
 
 #### Ejemplo de Request
 ```json
 {
+  "instanceId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
   "username": "usuario@ejemplo.com",
   "password": "miContraseña123",
   "retries": 5
@@ -281,6 +308,18 @@ POST /logout
 |-------------|--------|-----------|--------------------------|
 | x-api-key   | string | ✅        | API Key de la instancia  |
 
+#### Body (JSON)
+| Campo      | Tipo   | Requerido | Descripción                        |
+|------------|--------|-----------|------------------------------------|
+| instanceId | string | ✅        | ID de la instancia                 |
+
+#### Ejemplo de Request
+```json
+{
+  "instanceId": "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+}
+```
+
 #### Response (200 OK)
 ```json
 {
@@ -311,6 +350,18 @@ DELETE /instances
 | Header      | Tipo   | Requerido | Descripción              |
 |-------------|--------|-----------|--------------------------|
 | x-api-key   | string | ✅        | API Key de la instancia  |
+
+#### Body (JSON)
+| Campo      | Tipo   | Requerido | Descripción                        |
+|------------|--------|-----------|-----------------------------------|
+| instanceId | string | ✅        | ID de la instancia                 |
+
+#### Ejemplo de Request
+```json
+{
+  "instanceId": "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+}
+```
 
 #### Response (200 OK)
 ```json

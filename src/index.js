@@ -1,3 +1,4 @@
+require('dotenv').config();
 const fastify = require('fastify')({ logger: true });
 const tenantManager = require('./tenantManager');
 
@@ -18,7 +19,7 @@ fastify.get('/instances', async (request, reply) => {
   return { instances };
 });
 
-// Middleware/Hook to check API Key for protected routes
+// Middleware/Hook to check API Key and instanceId for protected routes
 const checkApiKey = async (request, reply) => {
   const apiKey = request.headers['x-api-key'];
   if (!apiKey) {
@@ -26,9 +27,51 @@ const checkApiKey = async (request, reply) => {
     return;
   }
 
+  const { instanceId } = request.body || {};
+
+  // Check if it's the admin API key
+  const adminApiKey = process.env.ADMIN_API_KEY;
+  if (adminApiKey && apiKey === adminApiKey) {
+    // Admin mode: find instance by instanceId from body
+    if (!instanceId) {
+      reply.code(400).send({ error: 'Missing instanceId in request body' });
+      return;
+    }
+
+    // Find instance by instanceId
+    const allInstances = tenantManager.listInstances();
+    const instanceData = allInstances.find(i => i.id === instanceId);
+    if (!instanceData) {
+      reply.code(404).send({ error: 'Instance not found' });
+      return;
+    }
+
+    const instance = tenantManager.getInstance(instanceData.apiKey);
+    if (!instance) {
+      reply.code(404).send({ error: 'Instance not active' });
+      return;
+    }
+
+    request.instance = instance;
+    request.isAdmin = true;
+    return;
+  }
+
+  // Regular mode: validate apiKey belongs to an instance
   const instance = tenantManager.getInstance(apiKey);
   if (!instance) {
     reply.code(403).send({ error: 'Invalid API Key or Instance not active' });
+    return;
+  }
+
+  // Validate instanceId from body
+  if (!instanceId) {
+    reply.code(400).send({ error: 'Missing instanceId in request body' });
+    return;
+  }
+
+  if (instanceId !== instance.id) {
+    reply.code(403).send({ error: 'instanceId does not match the API Key' });
     return;
   }
 
@@ -36,7 +79,7 @@ const checkApiKey = async (request, reply) => {
 };
 
 // Protected route: Check instance status
-fastify.get('/status', { preHandler: checkApiKey }, async (request, reply) => {
+fastify.post('/status', { preHandler: checkApiKey }, async (request, reply) => {
   try {
     const status = await tenantManager.getStatus(request.instance.apiKey);
     return status;
