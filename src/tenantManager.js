@@ -1,21 +1,150 @@
 const { chromium } = require('playwright');
 const { v4: uuidv4 } = require('uuid');
+const { PrismaClient } = require('@prisma/client');
+
+// Lazy initialization of Prisma client
+let prisma = null;
+const getPrisma = () => {
+  if (!prisma) {
+    prisma = new PrismaClient({
+      datasourceUrl: process.env.DATABASE_URL
+    });
+  }
+  return prisma;
+};
 
 class TenantManager {
   constructor() {
-    this.instances = new Map(); // Map<apiKey, { browser, page, context, id }>
+    this.instances = new Map();
+    this.initialized = false;
   }
 
-  // Helper function to wait (use sparingly - prefer waitFor methods)
+  // Initialize and restore sessions from database
+  async initialize() {
+    if (this.initialized) return;
+
+    console.log('Initializing TenantManager...');
+
+    try {
+      const db = getPrisma();
+      const dbInstances = await db.instance.findMany({
+        where: { isActive: true }
+      });
+
+      console.log(`Found ${dbInstances.length} active instances in database`);
+
+      for (const dbInstance of dbInstances) {
+        try {
+          await this._restoreInstance(dbInstance);
+          console.log(`Restored instance ${dbInstance.id}`);
+        } catch (error) {
+          console.error(`Failed to restore instance ${dbInstance.id}:`, error.message);
+          await db.instance.update({
+            where: { id: dbInstance.id },
+            data: { isActive: false }
+          });
+        }
+      }
+
+      this.initialized = true;
+      console.log('TenantManager initialized successfully');
+    } catch (error) {
+      console.error('TenantManager initialization error:', error.message);
+      this.initialized = true;
+    }
+  }
+
+  async _restoreInstance(dbInstance) {
+    const browser = await chromium.launch({
+      headless: false,
+      args: ['--no-sandbox', '--disable-setuid-sandbox']
+    });
+
+    let context;
+
+    if (dbInstance.storageState) {
+      try {
+        const storageState = JSON.parse(dbInstance.storageState);
+        context = await browser.newContext({ storageState });
+        console.log(`Restored storage state for instance ${dbInstance.id}`);
+      } catch (error) {
+        console.error('Failed to parse storage state, creating new context');
+        context = await browser.newContext();
+      }
+    } else {
+      context = await browser.newContext();
+    }
+
+    const page = await context.newPage();
+    page.setDefaultTimeout(15000);
+    page.setDefaultNavigationTimeout(20000);
+
+    await page.goto('https://pro.shalom.pe', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await this._wait(2000);
+
+    const currentUrl = page.url();
+    const isLoggedIn = !currentUrl.includes('login');
+
+    this.instances.set(dbInstance.apiKey, {
+      id: dbInstance.id,
+      apiKey: dbInstance.apiKey,
+      browser,
+      context,
+      page,
+      createdAt: dbInstance.createdAt,
+      username: isLoggedIn ? dbInstance.username : null,
+      lastShipmentTime: null
+    });
+
+    const db = getPrisma();
+    await db.instance.update({
+      where: { id: dbInstance.id },
+      data: { lastUsedAt: new Date() }
+    });
+
+    return { isLoggedIn, username: dbInstance.username };
+  }
+
   _wait(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
+  async _saveStorageState(apiKey) {
+    const instance = this.getInstance(apiKey);
+    if (!instance) return;
+
+    try {
+      const storageState = await instance.context.storageState();
+      const db = getPrisma();
+      await db.instance.update({
+        where: { apiKey },
+        data: {
+          storageState: JSON.stringify(storageState),
+          lastUsedAt: new Date()
+        }
+      });
+      console.log(`Saved storage state for instance ${instance.id}`);
+    } catch (error) {
+      console.error('Failed to save storage state:', error.message);
+    }
+  }
+
   async createInstance() {
+    await this.initialize();
+
     const apiKey = uuidv4();
     const id = uuidv4();
 
     console.log(`Creating instance ${id} with API Key ${apiKey}`);
+
+    const db = getPrisma();
+    await db.instance.create({
+      data: {
+        id,
+        apiKey,
+        isActive: true
+      }
+    });
 
     const browser = await chromium.launch({
       headless: false,
@@ -25,12 +154,11 @@ class TenantManager {
     const context = await browser.newContext();
     const page = await context.newPage();
 
-    // Configurar timeouts más cortos para mejor rendimiento
     page.setDefaultTimeout(15000);
     page.setDefaultNavigationTimeout(20000);
 
     await page.goto('https://pro.shalom.pe/login', { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await this._wait(1500); // Reducido de 3000
+    await this._wait(1500);
 
     this.instances.set(apiKey, {
       id,
@@ -40,7 +168,7 @@ class TenantManager {
       page,
       createdAt: new Date(),
       username: null,
-      lastShipmentTime: null // Para tracking de registros consecutivos
+      lastShipmentTime: null
     });
 
     return { apiKey, id };
@@ -51,6 +179,8 @@ class TenantManager {
   }
 
   async getStatus(apiKey) {
+    await this.initialize();
+
     const instance = this.getInstance(apiKey);
     if (!instance) return null;
 
@@ -66,13 +196,23 @@ class TenantManager {
   }
 
   async login(apiKey, username, password, retries = 3) {
+    await this.initialize();
+
     const instance = this.getInstance(apiKey);
     if (!instance) throw new Error('Instance not found');
 
     const { page } = instance;
 
     if (!page.url().includes('login')) {
-      if (!instance.username) instance.username = username;
+      if (!instance.username) {
+        instance.username = username;
+        const db = getPrisma();
+        await db.instance.update({
+          where: { apiKey },
+          data: { username }
+        });
+      }
+      await this._saveStorageState(apiKey);
       return { success: true, message: 'Already logged in', url: page.url() };
     }
 
@@ -103,13 +243,21 @@ class TenantManager {
         const currentUrl = page.url();
         if (!currentUrl.includes('login')) {
           instance.username = username;
+
+          const db = getPrisma();
+          await db.instance.update({
+            where: { apiKey },
+            data: { username }
+          });
+          await this._saveStorageState(apiKey);
+
           return { success: true, message: 'Login successful', url: currentUrl };
         }
 
         const content = await page.content();
         if (content.includes('incorrectas') || content.includes('error')) {
           if (attempt < retries) {
-            await this._wait(1000); // Reducido de 2000
+            await this._wait(1000);
             continue;
           }
           return { success: false, message: 'Invalid credentials' };
@@ -118,56 +266,97 @@ class TenantManager {
       } catch (error) {
         console.error(`Login error:`, error.message);
         if (attempt === retries) return { success: false, message: error.message };
-        await this._wait(1000); // Reducido de 2000
+        await this._wait(1000);
       }
     }
     return { success: false, message: 'Login failed' };
   }
 
   async logout(apiKey) {
+    await this.initialize();
+
     const instance = this.getInstance(apiKey);
     if (!instance) throw new Error('Instance not found');
     const { page, context } = instance;
+
     await context.clearCookies();
     await page.evaluate(() => { localStorage.clear(); sessionStorage.clear(); });
     instance.username = null;
+
+    const db = getPrisma();
+    await db.instance.update({
+      where: { apiKey },
+      data: {
+        username: null,
+        storageState: null
+      }
+    });
+
     await page.goto('https://pro.shalom.pe/login', { waitUntil: 'domcontentloaded', timeout: 20000 });
     return { success: true, message: 'Logged out' };
   }
 
   async closeInstance(apiKey) {
+    await this.initialize();
+
     const instance = this.getInstance(apiKey);
     if (instance) {
       await instance.browser.close();
       this.instances.delete(apiKey);
+
+      const db = getPrisma();
+      await db.instance.update({
+        where: { apiKey },
+        data: { isActive: false }
+      });
+
       return true;
     }
     return false;
   }
 
-  listInstances() {
-    return Array.from(this.instances.values()).map(i => ({ id: i.id, apiKey: i.apiKey, createdAt: i.createdAt }));
+  async listInstances() {
+    await this.initialize();
+
+    const db = getPrisma();
+    const dbInstances = await db.instance.findMany({
+      where: { isActive: true },
+      select: {
+        id: true,
+        apiKey: true,
+        username: true,
+        createdAt: true,
+        lastUsedAt: true
+      }
+    });
+
+    return dbInstances.map(i => ({
+      id: i.id,
+      apiKey: i.apiKey,
+      username: i.username,
+      createdAt: i.createdAt,
+      lastUsedAt: i.lastUsedAt,
+      inMemory: this.instances.has(i.apiKey)
+    }));
   }
 
   async registerShipment(apiKey, shipmentData) {
+    await this.initialize();
+
     const instance = this.getInstance(apiKey);
     if (!instance) throw new Error('Instance not found');
     const { page } = instance;
 
-    console.log(`[${instance.id}] Starting shipment registration (optimized)...`);
+    console.log(`[${instance.id}] Starting shipment registration...`);
     const startTime = Date.now();
 
     try {
-      // OPTIMIZACIÓN: Navegar a home y envios para resetear Vue state
-      // Usamos Promise para navegación más rápida
       console.log(`[${instance.id}] Resetting Vue state...`);
       await page.goto('https://pro.shalom.pe/#/home', { waitUntil: 'commit', timeout: 15000 });
       await page.goto('https://pro.shalom.pe/#/envios', { waitUntil: 'domcontentloaded', timeout: 15000 });
 
-      // Esperar a que el formulario esté listo
       await page.getByText('¿Qué tipo de producto', { exact: false }).waitFor({ state: 'visible', timeout: 8000 });
 
-      // PASO 1: Tipo de Producto
       const typeMap = { 'sobre': 'Sobre', 'xxs': 'Caja Paquete XXS', 'xs': 'Caja Paquete XS', 's': 'Caja Paquete S', 'm': 'Caja Paquete M', 'l': 'Caja Paquete L', 'custom': 'Otra Medida' };
       const typeName = typeMap[shipmentData.productType.toLowerCase()] || 'Sobre';
 
@@ -175,39 +364,32 @@ class TenantManager {
       await page.getByText(typeName, { exact: true }).first().click();
       await page.getByRole('button', { name: 'Continuar' }).click();
 
-      // Esperar a que aparezca el siguiente paso en lugar de wait fijo
       await page.getByText('¿A dónde', { exact: false }).waitFor({ state: 'visible', timeout: 8000 });
 
-      // PASO 2: Origen y Destino (OPTIMIZADO)
       console.log(`[${instance.id}] Step 2: Origin & Destination`);
       await this._selectLocationFast(page, 'Origen', shipmentData.origin);
       await this._selectLocationFast(page, 'Destino', shipmentData.destination);
 
       await page.getByRole('button', { name: 'Continuar' }).click();
-      await this._wait(800); // Pequeña espera para transición
+      await this._wait(800);
 
-      // PASO 3: Garantía
       console.log(`[${instance.id}] Step 3: Warranty`);
       if (!shipmentData.warranty) {
         await page.getByText('No deseo Garantía').click().catch(() => { });
       }
       await page.getByRole('button', { name: 'Continuar' }).click();
 
-      // Esperar al campo DNI del destinatario
       const dniInput = page.locator('input[placeholder="DNI"]').nth(1);
       await dniInput.waitFor({ state: 'visible', timeout: 8000 });
 
-      // PASO 4: Destinatario
       console.log(`[${instance.id}] Step 4: Recipient DNI`);
       await dniInput.fill(shipmentData.recipient.documentNumber);
 
-      // Esperar validación RENIEC (esto es obligatorio, pero podemos optimizar)
-      await this._wait(2000); // RENIEC toma ~2s mínimo
+      await this._wait(2000);
 
       await page.getByRole('button', { name: 'Continuar' }).click();
       await this._wait(800);
 
-      // PASO 5: Cobro Seguro
       console.log(`[${instance.id}] Step 5: Secure Billing`);
       if (!shipmentData.secureBilling) {
         await page.getByText('No deseo el servicio').click().catch(() => { });
@@ -215,7 +397,6 @@ class TenantManager {
       await page.getByRole('button', { name: 'Continuar' }).click();
       await this._wait(800);
 
-      // PASO 6: Declaración Jurada (si existe)
       console.log(`[${instance.id}] Step 6: Checking for Sworn Declaration...`);
       const declaracionVisible = await page.getByText('Declaración Jurada').isVisible().catch(() => false);
 
@@ -228,32 +409,30 @@ class TenantManager {
         await this._wait(300);
       }
 
-      // PASO 7: Clave de Seguridad
       console.log(`[${instance.id}] Step 7: Security Code`);
       const code = shipmentData.securityCode || '5858';
 
-      // Esperar a que el teclado sea visible
       await page.getByRole('button', { name: code[0], exact: true }).waitFor({ state: 'visible', timeout: 8000 });
 
-      // Ingresar código rápidamente
       for (const digit of code) {
         await page.getByRole('button', { name: digit, exact: true }).click();
-        await this._wait(150); // Reducido de 300
+        await this._wait(150);
       }
 
       await page.getByRole('button', { name: 'Continuar' }).click();
 
-      // Esperar resultado
       await page.getByText('Registrado', { exact: false }).waitFor({ state: 'visible', timeout: 10000 }).catch(() => { });
       await this._wait(500);
 
-      // PASO 8: Resultado
       const result = await this._getRegistrationResult(page);
 
       const elapsed = Date.now() - startTime;
       console.log(`[${instance.id}] Registration completed in ${elapsed}ms`);
 
       instance.lastShipmentTime = Date.now();
+
+      await this._saveStorageState(apiKey);
+
       return result;
 
     } catch (error) {
@@ -262,24 +441,19 @@ class TenantManager {
     }
   }
 
-  // Versión optimizada de selección de ubicación
   async _selectLocationFast(page, placeholder, text) {
-    // Abrir el multiselect
     const multiselect = page.locator('.multiselect').filter({ hasText: placeholder }).first();
     await multiselect.click();
 
-    // Escribir y esperar filtrado
     const input = page.getByPlaceholder(placeholder).first();
     await input.fill(text);
-    await this._wait(1500); // Reducido de 3000 - tiempo mínimo para API de búsqueda
+    await this._wait(1500);
 
-    // Seleccionar primera opción
     await page.keyboard.press('ArrowDown');
-    await this._wait(200); // Reducido de 500
+    await this._wait(200);
     await page.keyboard.press('Enter');
 
-    // Pequeña espera para que se confirme la selección
-    await this._wait(400); // Reducido de 1500
+    await this._wait(400);
   }
 
   async _getRegistrationResult(page) {
@@ -296,6 +470,23 @@ class TenantManager {
     }
     const errorMsg = await page.locator('.swal2-title').innerText().catch(() => 'Unknown error');
     return { success: false, message: errorMsg };
+  }
+
+  async shutdown() {
+    console.log('Shutting down TenantManager...');
+
+    for (const [apiKey, instance] of this.instances) {
+      try {
+        await this._saveStorageState(apiKey);
+        await instance.browser.close();
+      } catch (error) {
+        console.error(`Error closing instance ${instance.id}:`, error.message);
+      }
+    }
+
+    const db = getPrisma();
+    await db.$disconnect();
+    console.log('TenantManager shutdown complete');
   }
 }
 

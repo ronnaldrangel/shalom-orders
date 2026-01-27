@@ -455,23 +455,44 @@ const buildApp = async () => {
 const start = async () => {
   try {
     const fastify = await buildApp();
+    const tenantManager = require('./tenantManager');
+
+    // Initialize tenant manager (restore sessions from DB)
+    await tenantManager.initialize();
+
     const port = process.env.PORT || 3000;
     await fastify.listen({ port });
     console.log(`Server listening on ${fastify.server.address().port}`);
     console.log(`📚 Swagger docs available at http://localhost:${port}/docs`);
+
+    // Graceful shutdown handlers
+    const shutdown = async (signal) => {
+      console.log(`\n${signal} received. Shutting down gracefully...`);
+      await tenantManager.shutdown();
+      await fastify.close();
+      process.exit(0);
+    };
+
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGINT', () => shutdown('SIGINT'));
+
   } catch (err) {
     console.error('Error starting server:', err);
     process.exit(1);
   }
 };
 
-process.on('uncaughtException', (err) => {
+process.on('uncaughtException', async (err) => {
   console.error('Uncaught Exception:', err);
+  const tenantManager = require('./tenantManager');
+  await tenantManager.shutdown();
   process.exit(1);
 });
 
-process.on('unhandledRejection', (err) => {
+process.on('unhandledRejection', async (err) => {
   console.error('Unhandled Rejection:', err);
+  const tenantManager = require('./tenantManager');
+  await tenantManager.shutdown();
   process.exit(1);
 });
 
