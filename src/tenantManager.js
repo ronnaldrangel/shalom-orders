@@ -101,7 +101,7 @@ class TenantManager {
     }
 
     const page = await context.newPage();
-    
+
     // Optimize: Block unnecessary resources
     await page.route('**/*.{png,jpg,jpeg,gif,svg,css,woff,woff2}', route => route.abort());
 
@@ -352,7 +352,7 @@ class TenantManager {
       } catch (error) {
         console.error(`Error closing context for instance ${instance.id}:`, error.message);
       }
-      
+
       this.instances.delete(apiKey);
 
       const db = getPrisma();
@@ -429,10 +429,20 @@ class TenantManager {
       await this._wait(800);
 
       console.log(`[${instance.id}] Step 3: Warranty`);
-      if (!shipmentData.warranty) {
+      if (shipmentData.warranty && shipmentData.goodsValue) {
+        await page.getByText('Deseo Garantía').click().catch(() => { });
+        await page.getByRole('spinbutton').fill(shipmentData.goodsValue.toString());
+        await this._wait(500);
+      } else {
         await page.getByText('No deseo Garantía').click().catch(() => { });
       }
       await page.getByRole('button', { name: 'Continuar' }).click();
+
+      // Handle the "IMPORTANTE" modal if it appears after clicking Continuar with Warranty
+      if (shipmentData.warranty) {
+        await page.getByRole('button', { name: 'Ok' }).click().catch(() => { });
+        await this._wait(500);
+      }
 
       const dniInput = page.locator('input[placeholder="DNI"]').nth(1);
       await dniInput.waitFor({ state: 'visible', timeout: 8000 });
@@ -446,9 +456,8 @@ class TenantManager {
       await this._wait(800);
 
       console.log(`[${instance.id}] Step 5: Secure Billing`);
-      if (!shipmentData.secureBilling) {
-        await page.getByText('No deseo el servicio').click().catch(() => { });
-      }
+      // User removed secureBilling from API, always default to "No deseo"
+      await page.getByText('No deseo el servicio').click().catch(() => { });
       await page.getByRole('button', { name: 'Continuar' }).click();
       await this._wait(800);
 
@@ -538,7 +547,7 @@ class TenantManager {
         console.error(`Error closing instance ${instance.id}:`, error.message);
       }
     }
-    
+
     if (this.browser) {
       await this.browser.close();
       this.browser = null;
