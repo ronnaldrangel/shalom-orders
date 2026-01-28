@@ -6,8 +6,8 @@ const buildApp = async () => {
   const tenantManager = require('./tenantManager');
 
   // Register Redis
-  await fastify.register(require('@fastify/redis'), { 
-    url: process.env.REDIS_URL 
+  await fastify.register(require('@fastify/redis'), {
+    url: process.env.REDIS_URL
   });
 
   // Register Rate Limit
@@ -384,7 +384,7 @@ const buildApp = async () => {
             }
           },
           warranty: { type: 'boolean', default: false },
-          secureBilling: { type: 'boolean', default: false },
+          goodsValue: { type: 'number', description: 'Costo de la mercadería (solo si warranty es true)' },
           securityCode: { type: 'string', default: '5858' },
           customDimensions: {
             type: 'object',
@@ -459,9 +459,9 @@ const buildApp = async () => {
 
     try {
       // Add to queue for concurrency management
-      const job = await shipmentQueue.add('register', { 
-        apiKey: request.instance.apiKey, 
-        shipmentData 
+      const job = await shipmentQueue.add('register', {
+        apiKey: request.instance.apiKey,
+        shipmentData
       });
 
       // Wait for job completion to maintain synchronous API contract
