@@ -12,6 +12,7 @@ model Instance {
   id           String   @id @default(uuid())
   apiKey       String   @unique
   username     String?
+  password     String?
   storageState String?
   isActive     Boolean  @default(true)
   createdAt    DateTime @default(now())

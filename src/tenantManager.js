@@ -44,11 +44,9 @@ class TenantManager {
       }
 
       const db = getPrisma();
-      const dbInstances = await db.instance.findMany({
-        where: { isActive: true }
-      });
+      const dbInstances = await db.instance.findMany();
 
-      console.log(`Found ${dbInstances.length} active instances in database`);
+      console.log(`Found ${dbInstances.length} instances in database`);
 
       for (const dbInstance of dbInstances) {
         if (this.isShuttingDown) {
@@ -60,13 +58,6 @@ class TenantManager {
           console.log(`Restored instance ${dbInstance.id}`);
         } catch (error) {
           console.error(`Failed to restore instance ${dbInstance.id}:`, error.message);
-          // Only update DB if not shutting down, to avoid DB connection errors
-          if (!this.isShuttingDown) {
-            await db.instance.update({
-              where: { id: dbInstance.id },
-              data: { isActive: false }
-            });
-          }
         }
       }
 
@@ -112,7 +103,19 @@ class TenantManager {
     await this._wait(2000);
 
     const currentUrl = page.url();
-    const isLoggedIn = !currentUrl.includes('login');
+    let isLoggedIn = !currentUrl.includes('login');
+
+    // Auto-login if session expired and credentials exist
+    if (!isLoggedIn && dbInstance.username && dbInstance.password) {
+      console.log(`[${dbInstance.id}] Session expired, attempting auto-login with stored credentials...`);
+      const loginResult = await this._attemptLogin(page, dbInstance.username, dbInstance.password, dbInstance.id);
+      if (loginResult.success) {
+        isLoggedIn = true;
+        console.log(`[${dbInstance.id}] Auto-login successful`);
+      } else {
+        console.error(`[${dbInstance.id}] Auto-login failed: ${loginResult.message}`);
+      }
+    }
 
     this.instances.set(dbInstance.apiKey, {
       id: dbInstance.id,
@@ -129,6 +132,10 @@ class TenantManager {
       where: { id: dbInstance.id },
       data: { lastUsedAt: new Date() }
     });
+
+    if (isLoggedIn) {
+      await this._saveStorageState(dbInstance.apiKey);
+    }
 
     return { isLoggedIn, username: dbInstance.username };
   }
@@ -188,8 +195,7 @@ class TenantManager {
     await db.instance.create({
       data: {
         id,
-        apiKey,
-        isActive: true
+        apiKey
       }
     });
 
@@ -222,6 +228,22 @@ class TenantManager {
     return this.instances.get(apiKey);
   }
 
+  async getOrRestoreInstance(apiKey) {
+    let instance = this.getInstance(apiKey);
+    if (instance) return instance;
+
+    const db = getPrisma();
+    const dbInstance = await db.instance.findFirst({
+      where: { apiKey }
+    });
+
+    if (!dbInstance) return null;
+
+    await this._restoreInstance(dbInstance);
+    instance = this.getInstance(apiKey);
+    return instance || null;
+  }
+
   async getStatus(apiKey) {
     await this.initialize();
 
@@ -239,30 +261,10 @@ class TenantManager {
     };
   }
 
-  async login(apiKey, username, password, retries = 3) {
-    await this.initialize();
-
-    const instance = this.getInstance(apiKey);
-    if (!instance) throw new Error('Instance not found');
-
-    const { page } = instance;
-
-    if (!page.url().includes('login')) {
-      if (!instance.username) {
-        instance.username = username;
-        const db = getPrisma();
-        await db.instance.update({
-          where: { apiKey },
-          data: { username }
-        });
-      }
-      await this._saveStorageState(apiKey);
-      return { success: true, message: 'Already logged in', url: page.url() };
-    }
-
+  async _attemptLogin(page, username, password, instanceId, retries = 3) {
     for (let attempt = 1; attempt <= retries; attempt++) {
       try {
-        console.log(`Attempting login for instance ${instance.id} (Attempt ${attempt}/${retries})`);
+        console.log(`Attempting login for instance ${instanceId} (Attempt ${attempt}/${retries})`);
         if (attempt > 1) await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 });
 
         await page.waitForSelector('input[type="text"], input[type="email"]', { timeout: 8000 });
@@ -286,16 +288,7 @@ class TenantManager {
 
         const currentUrl = page.url();
         if (!currentUrl.includes('login')) {
-          instance.username = username;
-
-          const db = getPrisma();
-          await db.instance.update({
-            where: { apiKey },
-            data: { username }
-          });
-          await this._saveStorageState(apiKey);
-
-          return { success: true, message: 'Login successful', url: currentUrl };
+          return { success: true, url: currentUrl };
         }
 
         const content = await page.content();
@@ -314,6 +307,45 @@ class TenantManager {
       }
     }
     return { success: false, message: 'Login failed' };
+  }
+
+  async login(apiKey, username, password, retries = 3) {
+    await this.initialize();
+
+    const instance = await this.getOrRestoreInstance(apiKey);
+    if (!instance) throw new Error('Instance not found');
+
+    const { page } = instance;
+
+    if (!page.url().includes('login')) {
+      if (!instance.username) {
+        instance.username = username;
+        const db = getPrisma();
+        await db.instance.update({
+          where: { apiKey },
+          data: { username }
+        });
+      }
+      await this._saveStorageState(apiKey);
+      return { success: true, message: 'Already logged in', url: page.url() };
+    }
+
+    const result = await this._attemptLogin(page, username, password, instance.id, retries);
+
+    if (result.success) {
+      instance.username = username;
+
+      const db = getPrisma();
+      await db.instance.update({
+        where: { apiKey },
+        data: { username }
+      });
+      await this._saveStorageState(apiKey);
+
+      return { success: true, message: 'Login successful', url: result.url };
+    }
+
+    return result;
   }
 
   async logout(apiKey) {
@@ -354,20 +386,21 @@ class TenantManager {
       }
 
       this.instances.delete(apiKey);
-
-      const db = getPrisma();
-      try {
-        await db.instance.update({
-          where: { apiKey },
-          data: { isActive: false }
-        });
-      } catch (error) {
-        console.error(`Error updating DB for instance ${instance.id}:`, error.message);
-      }
-
-      return true;
     }
-    return false;
+
+    try {
+      const db = getPrisma();
+      await db.instance.delete({
+        where: { apiKey }
+      });
+      return true;
+    } catch (error) {
+      // Ignore if record doesn't exist (P2025)
+      if (error.code !== 'P2025') {
+        console.error(`Error deleting instance from DB:`, error.message);
+      }
+      return false;
+    }
   }
 
   async listInstances() {
@@ -375,7 +408,6 @@ class TenantManager {
 
     const db = getPrisma();
     const dbInstances = await db.instance.findMany({
-      where: { isActive: true },
       select: {
         id: true,
         apiKey: true,
@@ -398,7 +430,7 @@ class TenantManager {
   async registerShipment(apiKey, shipmentData) {
     await this.initialize();
 
-    const instance = this.getInstance(apiKey);
+    const instance = await this.getOrRestoreInstance(apiKey);
     if (!instance) throw new Error('Instance not found');
     const { page } = instance;
 
@@ -429,20 +461,8 @@ class TenantManager {
       await this._wait(800);
 
       console.log(`[${instance.id}] Step 3: Warranty`);
-      if (shipmentData.warranty && shipmentData.goodsValue) {
-        await page.getByText('Deseo Garantía').click().catch(() => { });
-        await page.getByRole('spinbutton').fill(shipmentData.goodsValue.toString());
-        await this._wait(500);
-      } else {
-        await page.getByText('No deseo Garantía').click().catch(() => { });
-      }
+      await page.getByText('No deseo Garantía').click().catch(() => { });
       await page.getByRole('button', { name: 'Continuar' }).click();
-
-      // Handle the "IMPORTANTE" modal if it appears after clicking Continuar with Warranty
-      if (shipmentData.warranty) {
-        await page.getByRole('button', { name: 'Ok' }).click().catch(() => { });
-        await this._wait(500);
-      }
 
       const dniInput = page.locator('input[placeholder="DNI"]').nth(1);
       await dniInput.waitFor({ state: 'visible', timeout: 8000 });
@@ -450,7 +470,29 @@ class TenantManager {
       console.log(`[${instance.id}] Step 4: Recipient DNI`);
       await dniInput.fill(shipmentData.recipient.documentNumber);
 
+      // Wait for potential autocomplete
       await this._wait(2000);
+
+      // Explicitly fill Name and Phone
+      const nameInput = page.locator('input[placeholder="Nombre"], input[placeholder="Nombres"], input[placeholder="Nombre Completo"]').first();
+      
+      if (shipmentData.recipient.name && await nameInput.isVisible()) {
+        const currentName = await nameInput.inputValue();
+        if (!currentName || currentName.trim() === '') {
+          console.log(`[${instance.id}] Name not autocompleted, filling manually: ${shipmentData.recipient.name}`);
+          await nameInput.fill(shipmentData.recipient.name);
+        } else {
+           console.log(`[${instance.id}] Name autocompleted (${currentName}), skipping manual fill.`);
+        }
+      }
+
+      if (shipmentData.recipient.phone) {
+        console.log(`[${instance.id}] Filling recipient phone: ${shipmentData.recipient.phone}`);
+        const phoneInput = page.locator('input[placeholder="Teléfono"], input[placeholder="Celular"], input[placeholder="Móvil"]').first();
+        if (await phoneInput.isVisible()) {
+          await phoneInput.fill(shipmentData.recipient.phone);
+        }
+      }
 
       await page.getByRole('button', { name: 'Continuar' }).click();
       await this._wait(800);
@@ -462,15 +504,27 @@ class TenantManager {
       await this._wait(800);
 
       console.log(`[${instance.id}] Step 6: Checking for Sworn Declaration...`);
-      const declaracionVisible = await page.getByText('Declaración Jurada').isVisible().catch(() => false);
-
-      if (declaracionVisible) {
+      // Use a race condition or a quick check, sometimes it appears immediately
+      const declaracionLocator = page.getByText('Declaración Jurada', { exact: false });
+      
+      try {
+        // Wait briefly to see if it appears
+        await declaracionLocator.waitFor({ state: 'visible', timeout: 3000 });
         console.log(`[${instance.id}] Sworn Declaration detected`);
+        
         const contentType = shipmentData.contentType || 'Documentos';
-        await page.getByText(contentType, { exact: true }).click().catch(() =>
-          page.getByText('Documentos', { exact: true }).click()
-        );
-        await this._wait(300);
+        
+        // Try to click the specific content type, fallback to 'Documentos'
+        const contentOption = page.getByText(contentType, { exact: true });
+        if (await contentOption.isVisible()) {
+             await contentOption.click();
+        } else {
+             await page.getByText('Documentos', { exact: true }).click();
+        }
+        await this._wait(500);
+      } catch (e) {
+        // Not visible, continue
+        console.log(`[${instance.id}] No Sworn Declaration popup detected.`);
       }
 
       console.log(`[${instance.id}] Step 7: Security Code`);
@@ -498,9 +552,184 @@ class TenantManager {
       await this._saveStorageState(apiKey);
 
       return result;
+    } catch (error) {
+      console.error(`[${instance.id}] Shipment registration error:`, error);
+      
+      // Capture error screenshot
+      try {
+        await page.screenshot({ path: `error-${instance.id}-${Date.now()}.png` });
+      } catch (e) { }
+
+      return {
+        success: false,
+        error: error.message,
+        details: 'Registration failed'
+      };
+    }
+  }
+
+  async registerMassiveShipment(apiKey, filePath, securityCode = '8002') {
+    await this.initialize();
+    const instance = await this.getOrRestoreInstance(apiKey);
+    if (!instance) throw new Error('Instance not found');
+    const { page } = instance;
+
+    console.log(`[${instance.id}] Starting massive shipment registration...`);
+    const startTime = Date.now();
+
+    try {
+      await page.goto('https://pro.shalom.pe/#/envios/list', { waitUntil: 'domcontentloaded', timeout: 15000 });
+      await this._wait(2000);
+
+      // Upload Excel
+      console.log(`[${instance.id}] Uploading Excel file: ${filePath}`);
+      const filePromise = page.waitForEvent('filechooser');
+      
+      const massiveBtn = page.getByText('Carga masiva de envíos', { exact: false });
+      if (await massiveBtn.isVisible()) {
+          await massiveBtn.click();
+      } else {
+          // Check if it is inside "Registra" menu
+          console.log(`[${instance.id}] Massive button not visible, checking menu...`);
+          const registraMenu = page.locator('text=Registra').first();
+          if (await registraMenu.isVisible()) {
+              await registraMenu.click();
+              await this._wait(500);
+              if (await massiveBtn.isVisible()) {
+                  await massiveBtn.click();
+              } else {
+                  throw new Error('Massive shipment button not found even after opening menu');
+              }
+          } else {
+              throw new Error('Massive shipment button not found');
+          }
+      }
+      
+      const fileChooser = await filePromise;
+      await fileChooser.setFiles(filePath);
+
+      // Handle "Subida exitosa" dialog
+      await page.getByRole('button', { name: 'OK' }).waitFor({ state: 'visible', timeout: 10000 });
+      await page.getByRole('button', { name: 'OK' }).click();
+      await this._wait(1000);
+
+      // Set Security Code
+      console.log(`[${instance.id}] Setting security code: ${securityCode}`);
+      // Try to find the button by title or image inside
+      const keyButton = page.locator('button[title="Clave de seguridad masiva"]');
+      if (await keyButton.isVisible()) {
+          await keyButton.click();
+      } else {
+          // Fallback if title selector fails, try by icon context or position
+          // Based on previous snapshots, it's near the delete button
+          await page.locator('.btn-warning').first().click(); 
+      }
+      
+      await page.getByRole('button', { name: 'Sí' }).click(); // Confirm "Quiere ingresar clave..."
+
+      // Fill code digits
+      const code = securityCode.toString();
+      await page.locator('.input-keyCode-1').fill(code[0]);
+      await page.locator('.input-keyCode-2').fill(code[1]);
+      await page.locator('.input-keyCode-3').fill(code[2]);
+      await page.locator('.input-keyCode-4').fill(code[3]);
+
+      await page.getByText('GENERAR').click();
+      
+      // Confirm "Se ha asignado la clave..."
+      await page.getByRole('button', { name: 'Confirmar' }).waitFor({ state: 'visible' });
+      await page.getByRole('button', { name: 'Confirmar' }).click();
+      await this._wait(1000);
+
+      // Continue and Finalize
+      console.log(`[${instance.id}] Finalizing registration...`);
+      // Click "Continuar" (using specific class to avoid ambiguity with origin/destination continue buttons)
+      // Use .btn-continuar which is specific to the footer action
+      await page.locator('.btn-continuar').click();
+      await this._wait(1000);
+
+      // Confirm "¿Enviar?"
+      // Sometimes there is a second confirmation or it takes time
+      const confirmBtn = page.getByRole('button', { name: 'Confirmar' });
+      if (await confirmBtn.isVisible()) {
+          await confirmBtn.click();
+      } else {
+          // If Confirmar is not immediately visible, wait for it
+          await confirmBtn.waitFor({ state: 'visible', timeout: 5000 });
+          await confirmBtn.click();
+      }
+      
+      await this._wait(1000);
+
+      // Confirm "Envíos solicitados" (Final OK)
+      // Wait longer for processing
+      await page.getByRole('button', { name: 'OK' }).waitFor({ state: 'visible', timeout: 60000 });
+      await page.getByRole('button', { name: 'OK' }).click();
+      await this._wait(1000);
+
+      // Scrape Pending Shipments
+      console.log(`[${instance.id}] Navigating to pending shipments for details...`);
+      await page.goto('https://pro.shalom.pe/#/solicitud/pendientes', { waitUntil: 'domcontentloaded' });
+      await page.waitForSelector('text=N° de Orden', { timeout: 10000 }).catch(() => console.log('No shipments found or timeout'));
+      await this._wait(1500);
+
+      const shipments = await page.evaluate(() => {
+        const results = [];
+        const elements = Array.from(document.querySelectorAll('*'));
+        const orderLabels = elements.filter(el => 
+            el.children.length === 0 && el.textContent && el.textContent.includes('N° de Orden')
+        );
+
+        orderLabels.forEach(label => {
+            let container = label.parentElement;
+            let attempts = 0;
+            while (container && attempts < 6) {
+                const text = container.innerText || '';
+                if (text.includes('Código') && text.includes('S/')) {
+                    const orderMatch = text.match(/N° de Orden:?\s*(\d+)/i);
+                    const codeMatch = text.match(/Código:?\s*([A-Z0-9]+)/i);
+                    const costMatch = text.match(/S\/\.?\s*([\d.]+)/);
+                      // Check for class 'time-deleted' on the container, its ancestors, or inside it
+                      const isDeleted = !!container.closest('.time-deleted') || !!container.querySelector('.time-deleted');
+ 
+                      if (orderMatch && !isDeleted) {
+                         const exists = results.find(r => r.orderNumber === orderMatch[1]);
+                         if (!exists) {
+                             results.push({
+                                 orderNumber: orderMatch[1],
+                                 code: codeMatch ? codeMatch[1] : 'N/A',
+                                 cost: costMatch ? costMatch[1] : '0.00'
+                             });
+                         }
+                    }
+                    break;
+                }
+                container = container.parentElement;
+                attempts++;
+            }
+        });
+         // Return only the last valid result (as requested by user)
+         return results.length > 0 ? [results[results.length - 1]] : [];
+       });
+
+      const elapsed = Date.now() - startTime;
+      console.log(`[${instance.id}] Massive registration completed in ${elapsed}ms. Found ${shipments.length} shipment(s).`);
+      
+      instance.lastShipmentTime = Date.now();
+      await this._saveStorageState(apiKey);
+
+      return { 
+          success: true, 
+          message: 'Massive shipment registered successfully', 
+          elapsed,
+          shipments
+      };
 
     } catch (error) {
-      console.error(`[${instance.id}] Registration failed:`, error.message);
+      console.error(`[${instance.id}] Massive registration error:`, error);
+      try {
+        await page.screenshot({ path: `error-massive-${instance.id}-${Date.now()}.png` });
+      } catch (e) { }
       throw error;
     }
   }

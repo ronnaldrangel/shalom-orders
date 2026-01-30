@@ -1,5 +1,4 @@
 require('dotenv').config();
-const { shipmentQueue, setupWorker, connection, queueEvents } = require('./queue');
 
 const buildApp = async () => {
   const fastify = require('fastify')({ logger: true });
@@ -104,9 +103,9 @@ const buildApp = async () => {
         return;
       }
 
-      const instance = tenantManager.getInstance(instanceData.apiKey);
+      const instance = await tenantManager.getOrRestoreInstance(instanceData.apiKey);
       if (!instance) {
-        reply.code(404).send({ error: 'Instance not active' });
+        reply.code(404).send({ error: 'Instance not found' });
         return;
       }
 
@@ -115,9 +114,9 @@ const buildApp = async () => {
       return;
     }
 
-    const instance = tenantManager.getInstance(apiKey);
+    const instance = await tenantManager.getOrRestoreInstance(apiKey);
     if (!instance) {
-      reply.code(403).send({ error: 'Invalid API Key or Instance not active' });
+      reply.code(403).send({ error: 'Invalid API Key' });
       return;
     }
 
@@ -170,7 +169,7 @@ const buildApp = async () => {
     schema: {
       tags: ['Instances'],
       summary: 'Listar instancias',
-      description: 'Devuelve todas las instancias activas. Requiere Admin API Key.',
+      description: 'Devuelve todas las instancias. Requiere Admin API Key.',
       security: [{ ApiKeyAuth: [] }],
       response: {
         200: {
@@ -183,7 +182,10 @@ const buildApp = async () => {
                 properties: {
                   id: { type: 'string' },
                   apiKey: { type: 'string' },
-                  createdAt: { type: 'string', format: 'date-time' }
+                  username: { type: 'string' },
+                  createdAt: { type: 'string', format: 'date-time' },
+                  lastUsedAt: { type: 'string', format: 'date-time', nullable: true },
+                  inMemory: { type: 'boolean' }
                 }
               }
             }
@@ -354,130 +356,35 @@ const buildApp = async () => {
     }
   });
 
-  // Route: Register shipment
-  fastify.post('/shipments', {
+
+
+  // Route: Register massive shipment
+  fastify.post('/register', {
     preHandler: checkApiKey,
     schema: {
       tags: ['Shipments'],
-      summary: 'Registrar envío',
-      description: 'Registra un nuevo envío en Shalom Pro de forma automatizada.',
+      summary: 'Registrar envíos masivos',
+      description: 'Registra envíos masivamente desde un archivo.',
       security: [{ ApiKeyAuth: [] }],
       body: {
         type: 'object',
-        required: ['instanceId', 'productType', 'origin', 'destination', 'recipient'],
+        required: ['instanceId', 'filePath'],
         properties: {
           instanceId: { type: 'string', description: 'ID de la instancia' },
-          productType: {
-            type: 'string',
-            enum: ['sobre', 'xxs', 'xs', 's', 'm', 'l', 'custom'],
-            description: 'Tipo de producto'
-          },
-          origin: { type: 'string', description: 'Ubicación de origen' },
-          destination: { type: 'string', description: 'Ubicación de destino' },
-          recipient: {
-            type: 'object',
-            required: ['documentNumber'],
-            properties: {
-              documentType: { type: 'string', enum: ['dni', 'ruc', 'ce'], default: 'dni' },
-              documentNumber: { type: 'string', description: 'Número de documento' },
-              phone: { type: 'string', description: 'Teléfono (opcional)' }
-            }
-          },
-          warranty: { type: 'boolean', default: false },
-          goodsValue: { type: 'number', description: 'Costo de la mercadería (solo si warranty es true)' },
-          securityCode: { type: 'string', default: '5858' },
-          customDimensions: {
-            type: 'object',
-            properties: {
-              largo: { type: 'number' },
-              ancho: { type: 'number' },
-              alto: { type: 'number' },
-              peso: { type: 'number' }
-            }
-          }
-        }
-      },
-      response: {
-        200: {
-          type: 'object',
-          properties: {
-            success: { type: 'boolean' },
-            registrationNumber: { type: 'string' },
-            price: { type: 'number' },
-            message: { type: 'string' }
-          }
+          filePath: { type: 'string', description: 'Ruta del archivo' },
+          securityCode: { type: 'string' }
         }
       }
     }
   }, async (request, reply) => {
-    const shipmentData = request.body;
-
-    if (!shipmentData) {
-      reply.code(400).send({ error: 'Request body is required' });
-      return;
-    }
-
-    if (!shipmentData.productType) {
-      reply.code(400).send({ error: 'productType is required' });
-      return;
-    }
-
-    if (!shipmentData.origin) {
-      reply.code(400).send({ error: 'origin is required' });
-      return;
-    }
-
-    if (!shipmentData.destination) {
-      reply.code(400).send({ error: 'destination is required' });
-      return;
-    }
-
-    if (!shipmentData.recipient || !shipmentData.recipient.documentNumber) {
-      reply.code(400).send({ error: 'recipient.documentNumber is required' });
-      return;
-    }
-
-    if (shipmentData.securityCode) {
-      if (!/^\d{4}$/.test(shipmentData.securityCode)) {
-        reply.code(400).send({ error: 'securityCode must be exactly 4 digits' });
-        return;
-      }
-      const code = shipmentData.securityCode;
-      const isConsecutive =
-        (parseInt(code[1]) === parseInt(code[0]) + 1 &&
-          parseInt(code[2]) === parseInt(code[1]) + 1 &&
-          parseInt(code[3]) === parseInt(code[2]) + 1) ||
-        (parseInt(code[1]) === parseInt(code[0]) - 1 &&
-          parseInt(code[2]) === parseInt(code[1]) - 1 &&
-          parseInt(code[3]) === parseInt(code[2]) - 1);
-
-      if (isConsecutive) {
-        reply.code(400).send({ error: 'securityCode cannot have consecutive digits' });
-        return;
-      }
-    }
+    const { filePath, securityCode } = request.body;
 
     try {
-      // Add to queue for concurrency management
-      const job = await shipmentQueue.add('register', {
-        apiKey: request.instance.apiKey,
-        shipmentData
-      });
-
-      // Wait for job completion to maintain synchronous API contract
-      // Timeout 2 minutes
-      const result = await job.waitUntilFinished(queueEvents, 120000);
-
-      if (!result.success) {
-        reply.code(400).send(result);
-        return;
-      }
-
+      const result = await tenantManager.registerMassiveShipment(request.instance.apiKey, filePath, securityCode);
       return result;
     } catch (err) {
       request.log.error(err);
-      const message = err.message || 'Shipment registration failed';
-      reply.code(500).send({ error: message, details: err.message });
+      reply.code(500).send({ error: err.message });
     }
   });
 
@@ -488,9 +395,6 @@ const start = async () => {
   try {
     const fastify = await buildApp();
     const tenantManager = require('./tenantManager');
-
-    // Start Queue Worker
-    setupWorker();
 
     // Initialize tenant manager (restore sessions from DB)
     await tenantManager.initialize();
