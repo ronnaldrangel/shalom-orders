@@ -358,28 +358,62 @@ const buildApp = async () => {
 
 
 
+  const { generateMassiveShipmentExcel } = require('./utils/excel');
+
   // Route: Register massive shipment
   fastify.post('/register', {
     preHandler: checkApiKey,
     schema: {
       tags: ['Shipments'],
       summary: 'Registrar envíos masivos',
-      description: 'Registra envíos masivamente desde un archivo.',
+      description: 'Registra envíos masivamente desde un archivo o datos JSON.',
       security: [{ ApiKeyAuth: [] }],
       body: {
         type: 'object',
-        required: ['instanceId', 'filePath'],
         properties: {
           instanceId: { type: 'string', description: 'ID de la instancia' },
-          filePath: { type: 'string', description: 'Ruta del archivo' },
+          filePath: { type: 'string', description: 'Ruta del archivo (opcional si se envía shipments)' },
+          shipments: { 
+            type: 'array', 
+            description: 'Lista de envíos para generar Excel',
+            items: {
+              type: 'object',
+              properties: {
+                recipientDoc: { type: 'string' },
+                recipientPhone: { type: 'string' },
+                contactDoc: { type: 'string' },
+                contactPhone: { type: 'string' },
+                grr: { type: 'string' },
+                origin: { type: 'string' },
+                destination: { type: 'string' },
+                content: { type: 'string' },
+                height: { type: 'number' },
+                width: { type: 'number' },
+                length: { type: 'number' },
+                weight: { type: 'number' },
+                quantity: { type: 'number' }
+              }
+            }
+          },
           securityCode: { type: 'string' }
         }
       }
     }
   }, async (request, reply) => {
-    const { filePath, securityCode } = request.body;
+    let { filePath, shipments, securityCode } = request.body;
+
+    if (!filePath && !shipments) {
+      reply.code(400).send({ error: 'Either filePath or shipments must be provided' });
+      return;
+    }
 
     try {
+      if (shipments && shipments.length > 0) {
+        // Generate Excel from shipments
+        filePath = generateMassiveShipmentExcel(shipments);
+        request.log.info(`Generated Excel file at: ${filePath}`);
+      }
+
       const result = await tenantManager.registerMassiveShipment(request.instance.apiKey, filePath, securityCode);
       return result;
     } catch (err) {
