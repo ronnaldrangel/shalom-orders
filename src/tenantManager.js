@@ -578,7 +578,10 @@ class TenantManager {
     const startTime = Date.now();
 
     try {
+      console.log(`[${instance.id}] Navigating to shipment list...`);
       await page.goto('https://pro.shalom.pe/#/envios/list', { waitUntil: 'domcontentloaded', timeout: 15000 });
+      // Force reload to ensure clean state as requested
+      await page.reload({ waitUntil: 'domcontentloaded' });
       await this._wait(2000);
 
       // Upload Excel
