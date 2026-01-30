@@ -360,6 +360,8 @@ const buildApp = async () => {
 
   const { generateMassiveShipmentExcel } = require('./utils/excel');
 
+  const fs = require('fs');
+
   // Route: Register massive shipment
   fastify.post('/register', {
     preHandler: checkApiKey,
@@ -401,6 +403,7 @@ const buildApp = async () => {
     }
   }, async (request, reply) => {
     let { filePath, shipments, securityCode } = request.body;
+    let generatedFilePath = null;
 
     if (!filePath && !shipments) {
       reply.code(400).send({ error: 'Either filePath or shipments must be provided' });
@@ -411,6 +414,7 @@ const buildApp = async () => {
       if (shipments && shipments.length > 0) {
         // Generate Excel from shipments
         filePath = generateMassiveShipmentExcel(shipments);
+        generatedFilePath = filePath;
         request.log.info(`Generated Excel file at: ${filePath}`);
       }
 
@@ -419,6 +423,16 @@ const buildApp = async () => {
     } catch (err) {
       request.log.error(err);
       reply.code(500).send({ error: err.message });
+    } finally {
+      // Clean up generated file
+      if (generatedFilePath && fs.existsSync(generatedFilePath)) {
+        try {
+          fs.unlinkSync(generatedFilePath);
+          request.log.info(`Cleaned up generated file: ${generatedFilePath}`);
+        } catch (cleanupErr) {
+          request.log.error(`Failed to cleanup file ${generatedFilePath}: ${cleanupErr.message}`);
+        }
+      }
     }
   });
 
