@@ -1,21 +1,38 @@
 require('dotenv').config();
 
 const buildApp = async () => {
-  const fastify = require('fastify')({ logger: true });
+  const fastify = require('fastify')({ 
+    logger: true,
+    pluginTimeout: 30000 // Aumentar timeout de plugins a 30s para conexiones Redis lentas
+  });
   const tenantManager = require('./tenantManager');
 
   // Register Redis
-  await fastify.register(require('@fastify/redis'), {
-    url: process.env.REDIS_URL
-  });
+  try {
+    await fastify.register(require('@fastify/redis'), {
+      url: process.env.REDIS_URL,
+      connectTimeout: 20000, // Timeout de conexión Redis
+      maxRetriesPerRequest: 3
+    });
+  } catch (err) {
+    console.warn('Redis connection failed, rate limiting will be local-only or disabled:', err.message);
+    // Podríamos continuar sin Redis si el rate limit soporta fallback, 
+    // pero @fastify/rate-limit con opción 'redis' esperará la instancia.
+    // Si falla Redis, la app podría no iniciar correctamente si rate-limit depende de él.
+  }
 
   // Register Rate Limit
-  await fastify.register(require('@fastify/rate-limit'), {
+  const rateLimitOptions = {
     max: 100,
     timeWindow: '1 minute',
-    redis: fastify.redis, // @fastify/redis instance
     keyGenerator: (req) => req.headers['x-api-key'] || req.ip
-  });
+  };
+
+  if (fastify.redis) {
+    rateLimitOptions.redis = fastify.redis;
+  }
+
+  await fastify.register(require('@fastify/rate-limit'), rateLimitOptions);
 
   // Register Swagger
   await fastify.register(require('@fastify/swagger'), {
@@ -374,10 +391,10 @@ const buildApp = async () => {
         type: 'object',
         properties: {
           instanceId: { type: 'string', description: 'ID de la instancia' },
-          filePath: { type: 'string', description: 'Ruta del archivo (opcional si se envía shipments)' },
+          filePath: { type: 'string', description: 'Ruta del archivo (Opcional si se envía shipments)' },
           shipments: { 
             type: 'array', 
-            description: 'Lista de envíos para generar Excel',
+            description: 'Lista de envíos para generar Excel (Opcional si se envía filePath)',
             items: {
               type: 'object',
               properties: {
@@ -388,7 +405,10 @@ const buildApp = async () => {
                 grr: { type: 'string' },
                 origin: { type: 'string' },
                 destination: { type: 'string' },
-                content: { type: 'string' },
+                content: { 
+                  type: 'string',
+                  enum: ['SOBRE', 'PAQUETE XXS', 'PAQUETE XS', 'PAQUETE S', 'PAQUETE M', 'PAQUETE L', 'CAJA', 'BULTO']
+                },
                 height: { type: 'number' },
                 width: { type: 'number' },
                 length: { type: 'number' },
@@ -404,6 +424,17 @@ const buildApp = async () => {
   }, async (request, reply) => {
     let { filePath, shipments, securityCode } = request.body;
     let generatedFilePath = null;
+
+    if (securityCode) {
+      const pin = String(securityCode);
+      const ascending = "0123456789";
+      const descending = "9876543210";
+      
+      if (pin.length === 4 && (ascending.includes(pin) || descending.includes(pin))) {
+        reply.code(400).send({ error: 'Security code cannot be a sequence of 4 consecutive digits (e.g. 1234, 4321)' });
+        return;
+      }
+    }
 
     if (!filePath && !shipments) {
       reply.code(400).send({ error: 'Either filePath or shipments must be provided' });
@@ -422,7 +453,11 @@ const buildApp = async () => {
       return result;
     } catch (err) {
       request.log.error(err);
-      reply.code(500).send({ error: err.message });
+      const isDebug = process.env.DEBUG === 'true';
+      const errorResponse = isDebug 
+        ? { error: err.message, stack: err.stack } 
+        : { error: 'Ocurrió un error. Por favor intente nuevamente.' };
+      reply.code(500).send(errorResponse);
     } finally {
       // Clean up generated file
       if (generatedFilePath && fs.existsSync(generatedFilePath)) {
