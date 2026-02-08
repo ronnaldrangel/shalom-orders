@@ -17,6 +17,9 @@ RUN npx prisma generate
 # Copiar el código fuente
 COPY . .
 
+# Dar permisos de ejecución al script de inicio
+RUN chmod +x start.sh
+
 # Exponer el puerto
 EXPOSE 3000
 
@@ -25,5 +28,5 @@ ENV PORT=3000
 ENV HEADLESS=true
 ENV NODE_ENV=production
 
-# Comando para iniciar la aplicación ejecutando migraciones primero
-CMD ["/bin/sh", "-c", "npx prisma migrate deploy && node src/index.js"]
+# Usar el script de inicio
+CMD ["./start.sh"]
