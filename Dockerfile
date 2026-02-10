@@ -6,6 +6,7 @@ WORKDIR /app
 
 # Copiar archivos de dependencias
 COPY package*.json ./
+COPY prisma.config.ts ./
 COPY prisma ./prisma/
 
 # Instalar dependencias
