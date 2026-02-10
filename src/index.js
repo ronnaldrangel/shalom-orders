@@ -200,8 +200,7 @@ const buildApp = async () => {
                   id: { type: 'string' },
                   apiKey: { type: 'string' },
                   username: { type: 'string' },
-                  createdAt: { type: 'string', format: 'date-time' },
-                  lastUsedAt: { type: 'string', format: 'date-time', nullable: true },
+                  createdAt: { type: 'string', format: 'date-time', nullable: true },
                   inMemory: { type: 'boolean' }
                 }
               }

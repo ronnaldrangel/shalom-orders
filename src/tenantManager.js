@@ -76,21 +76,7 @@ class TenantManager {
   async _restoreInstance(dbInstance) {
     if (!this.browser) await this.initialize();
 
-    let context;
-
-    if (dbInstance.storageState) {
-      try {
-        const storageState = JSON.parse(dbInstance.storageState);
-        context = await this.browser.newContext({ storageState });
-        console.log(`Restored storage state for instance ${dbInstance.id}`);
-      } catch (error) {
-        console.error('Failed to parse storage state, creating new context');
-        context = await this.browser.newContext();
-      }
-    } else {
-      context = await this.browser.newContext();
-    }
-
+    const context = await this.browser.newContext();
     const page = await context.newPage();
 
     // Optimize: Block unnecessary resources
@@ -122,52 +108,15 @@ class TenantManager {
       apiKey: dbInstance.apiKey,
       context,
       page,
-      createdAt: dbInstance.createdAt,
       username: isLoggedIn ? dbInstance.username : null,
       lastShipmentTime: null
     });
-
-    const db = getPrisma();
-    await db.instance.update({
-      where: { id: dbInstance.id },
-      data: { lastUsedAt: new Date() }
-    });
-
-    if (isLoggedIn) {
-      await this._saveStorageState(dbInstance.apiKey);
-    }
 
     return { isLoggedIn, username: dbInstance.username };
   }
 
   _wait(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
-  }
-
-  async _saveStorageState(apiKey) {
-    const instance = this.getInstance(apiKey);
-    if (!instance) return;
-
-    // Don't try to save state if context is closed or we are shutting down abruptly
-    if (this.isShuttingDown && (!instance.context || !instance.context.browser())) return;
-
-    try {
-      const storageState = await instance.context.storageState();
-      const db = getPrisma();
-      await db.instance.update({
-        where: { apiKey },
-        data: {
-          storageState: JSON.stringify(storageState),
-          lastUsedAt: new Date()
-        }
-      });
-      console.log(`Saved storage state for instance ${instance.id}`);
-    } catch (error) {
-      // Ignore errors if shutting down
-      if (!this.isShuttingDown && !error.message.includes('Target page, context or browser has been closed')) {
-        console.error('Failed to save storage state:', error.message);
-      }
-    }
   }
 
   async createInstance() {
@@ -216,7 +165,6 @@ class TenantManager {
       apiKey,
       context,
       page,
-      createdAt: new Date(),
       username: null,
       lastShipmentTime: null
     });
@@ -318,15 +266,15 @@ class TenantManager {
     const { page } = instance;
 
     if (!page.url().includes('login')) {
-      if (!instance.username) {
+      // Always update credentials if provided, to ensure persistence for auto-login
+      if (username) {
         instance.username = username;
         const db = getPrisma();
         await db.instance.update({
           where: { apiKey },
-          data: { username }
+          data: { username, password }
         });
       }
-      await this._saveStorageState(apiKey);
       return { success: true, message: 'Already logged in', url: page.url() };
     }
 
@@ -338,9 +286,8 @@ class TenantManager {
       const db = getPrisma();
       await db.instance.update({
         where: { apiKey },
-        data: { username }
+        data: { username, password }
       });
-      await this._saveStorageState(apiKey);
 
       return { success: true, message: 'Login successful', url: result.url };
     }
@@ -363,8 +310,7 @@ class TenantManager {
     await db.instance.update({
       where: { apiKey },
       data: {
-        username: null,
-        storageState: null
+        username: null
       }
     });
 
@@ -412,8 +358,7 @@ class TenantManager {
         id: true,
         apiKey: true,
         username: true,
-        createdAt: true,
-        lastUsedAt: true
+        createdAt: true
       }
     });
 
@@ -422,7 +367,6 @@ class TenantManager {
       apiKey: i.apiKey,
       username: i.username,
       createdAt: i.createdAt,
-      lastUsedAt: i.lastUsedAt,
       inMemory: this.instances.has(i.apiKey)
     }));
   }
@@ -548,8 +492,6 @@ class TenantManager {
       console.log(`[${instance.id}] Registration completed in ${elapsed}ms`);
 
       instance.lastShipmentTime = Date.now();
-
-      await this._saveStorageState(apiKey);
 
       return result;
     } catch (error) {
@@ -719,7 +661,6 @@ class TenantManager {
       console.log(`[${instance.id}] Massive registration completed in ${elapsed}ms. Found ${shipments.length} shipment(s).`);
       
       instance.lastShipmentTime = Date.now();
-      await this._saveStorageState(apiKey);
 
       return { 
           success: true, 
@@ -773,7 +714,6 @@ class TenantManager {
 
     for (const [apiKey, instance] of this.instances) {
       try {
-        await this._saveStorageState(apiKey);
         await instance.context.close();
       } catch (error) {
         console.error(`Error closing instance ${instance.id}:`, error.message);
