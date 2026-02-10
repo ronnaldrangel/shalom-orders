@@ -3,9 +3,16 @@ require('dotenv').config();
 const buildApp = async () => {
   const fastify = require('fastify')({ 
     logger: true,
-    pluginTimeout: 30000 // Aumentar timeout de plugins a 30s para conexiones Redis lentas
+    pluginTimeout: 30000, // Aumentar timeout de plugins a 30s para conexiones Redis lentas
+    ajv: {
+      customOptions: {
+        keywords: ['example']
+      }
+    }
   });
   const tenantManager = require('./tenantManager');
+  const tracker = require('./tracker');
+  const agencyService = require('./agency_service');
 
   // Register Redis
   try {
@@ -20,6 +27,18 @@ const buildApp = async () => {
     // pero @fastify/rate-limit con opción 'redis' esperará la instancia.
     // Si falla Redis, la app podría no iniciar correctamente si rate-limit depende de él.
   }
+
+  // Initialize Services with Redis
+  if (fastify.redis) {
+    tracker.setRedisClient(fastify.redis);
+    agencyService.setRedisClient(fastify.redis);
+  } else {
+    console.warn('Redis not available, tracker and agency service will run without cache.');
+  }
+
+  // Initialize background services
+  tracker.initialize().catch(err => console.error('Failed to initialize tracker:', err));
+  agencyService.initialize().catch(err => console.error('Failed to initialize agency service:', err));
 
   // Register Rate Limit
   const rateLimitOptions = {
@@ -78,6 +97,57 @@ const buildApp = async () => {
     }
   }, async (request, reply) => {
     return { status: 'ok', uptime: process.uptime() };
+  });
+
+  // Route: Public Tracking
+  fastify.post('/track', {
+    schema: {
+      tags: ['Shipments'],
+      summary: 'Rastrear envío (Público)',
+      description: 'Rastrea un envío usando número y código de orden. No requiere autenticación.',
+      body: {
+        type: 'object',
+        required: ['orderNumber', 'orderCode'],
+        properties: {
+          orderNumber: { type: 'string', example: '123456' },
+          orderCode: { type: 'string', example: 'ABC-123' }
+        }
+      },
+      response: {
+        200: {
+          type: 'object',
+          description: 'Tracking info',
+          additionalProperties: true
+        }
+      }
+    }
+  }, async (request, reply) => {
+    const { orderNumber, orderCode } = request.body;
+    try {
+      const result = await tracker.trackPackage(orderNumber, orderCode);
+      return result;
+    } catch (error) {
+      request.log.error(error);
+      reply.code(500).send({ error: error.message });
+    }
+  });
+
+  // Route: Public Agency List
+  fastify.get('/list', {
+    schema: {
+      tags: ['Shipments'], // Or create a new tag 'Public'
+      summary: 'Listar agencias (Público)',
+      description: 'Obtiene la lista de agencias disponibles. No requiere autenticación.',
+      // Eliminamos la validación estricta de respuesta para evitar errores con estructuras dinámicas
+    }
+  }, async (request, reply) => {
+    try {
+      const result = await agencyService.getAgencies();
+      return result;
+    } catch (error) {
+      request.log.error(error);
+      reply.code(500).send({ error: error.message });
+    }
   });
 
   // Middleware to check Admin API Key only
