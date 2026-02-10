@@ -21,11 +21,10 @@ const buildApp = async () => {
       connectTimeout: 20000, // Timeout de conexión Redis
       maxRetriesPerRequest: 3
     });
+    console.log('✅ Redis connected successfully');
   } catch (err) {
-    console.warn('Redis connection failed, rate limiting will be local-only or disabled:', err.message);
-    // Podríamos continuar sin Redis si el rate limit soporta fallback, 
-    // pero @fastify/rate-limit con opción 'redis' esperará la instancia.
-    // Si falla Redis, la app podría no iniciar correctamente si rate-limit depende de él.
+    console.error('❌ Redis connection failed:', err.message);
+    console.warn('⚠️  Rate limiting will be local-only or disabled.');
   }
 
   // Initialize Services with Redis

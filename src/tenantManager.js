@@ -27,12 +27,22 @@ class TenantManager {
   async initialize() {
     if (this.initialized || this.isShuttingDown) return;
 
-    console.log('Initializing TenantManager...');
+    console.log('🔄 Initializing TenantManager...');
 
     try {
+      // Check Database Connection
+      const db = getPrisma();
+      try {
+        await db.$connect();
+        console.log('✅ Postgres Database connected successfully');
+      } catch (dbErr) {
+        console.error('❌ Postgres Database connection failed:', dbErr.message);
+        throw dbErr;
+      }
+
       if (!this.browser) {
         if (this.isShuttingDown) return;
-        console.log('Launching shared browser instance...');
+        console.log('🚀 Launching shared browser instance...');
         this.browser = await chromium.launch({
           headless: process.env.HEADLESS !== 'false',
           args: [
@@ -43,31 +53,30 @@ class TenantManager {
         });
       }
 
-      const db = getPrisma();
       const dbInstances = await db.instance.findMany();
 
-      console.log(`Found ${dbInstances.length} instances in database`);
+      console.log(`📦 Found ${dbInstances.length} instances in database`);
 
       for (const dbInstance of dbInstances) {
         if (this.isShuttingDown) {
-          console.log('Initialization aborted due to shutdown');
+          console.log('⚠️ Initialization aborted due to shutdown');
           break;
         }
         try {
           await this._restoreInstance(dbInstance);
-          console.log(`Restored instance ${dbInstance.id}`);
+          console.log(`✅ Restored instance ${dbInstance.id}`);
         } catch (error) {
-          console.error(`Failed to restore instance ${dbInstance.id}:`, error.message);
+          console.error(`❌ Failed to restore instance ${dbInstance.id}:`, error.message);
         }
       }
 
       this.initialized = true;
       if (!this.isShuttingDown) {
-        console.log('TenantManager initialized successfully');
+        console.log('✨ TenantManager initialized successfully');
       }
     } catch (error) {
       if (!this.isShuttingDown) {
-        console.error('TenantManager initialization error:', error.message);
+        console.error('❌ TenantManager initialization error:', error.message);
       }
       this.initialized = true;
     }
