@@ -99,12 +99,29 @@ const buildApp = async () => {
     return { status: 'ok', uptime: process.uptime() };
   });
 
-  // Route: Public Tracking
+  // Middleware to check Admin API Key only
+  const checkAdminApiKey = async (request, reply) => {
+    const apiKey = request.headers['x-api-key'];
+    if (!apiKey) {
+      reply.code(401).send({ error: 'Missing x-api-key header' });
+      return;
+    }
+
+    const adminApiKey = process.env.ADMIN_API_KEY;
+    if (!adminApiKey || apiKey !== adminApiKey) {
+      reply.code(403).send({ error: 'Invalid Admin API Key' });
+      return;
+    }
+  };
+
+  // Route: Tracking (Admin Only)
   fastify.post('/track', {
+    preHandler: checkAdminApiKey,
     schema: {
       tags: ['Shipments'],
-      summary: 'Rastrear envío (Público)',
-      description: 'Rastrea un envío usando número y código de orden. No requiere autenticación.',
+      summary: 'Rastrear envío',
+      description: 'Rastrea un envío usando número y código de orden. Requiere Admin API Key.',
+      security: [{ ApiKeyAuth: [] }],
       body: {
         type: 'object',
         required: ['orderNumber', 'orderCode'],
@@ -132,12 +149,14 @@ const buildApp = async () => {
     }
   });
 
-  // Route: Public Agency List
+  // Route: Agency List (Admin Only)
   fastify.get('/list', {
+    preHandler: checkAdminApiKey,
     schema: {
-      tags: ['Shipments'], // Or create a new tag 'Public'
-      summary: 'Listar agencias (Público)',
-      description: 'Obtiene la lista de agencias disponibles. No requiere autenticación.',
+      tags: ['Shipments'],
+      summary: 'Listar agencias',
+      description: 'Obtiene la lista de agencias disponibles. Requiere Admin API Key.',
+      security: [{ ApiKeyAuth: [] }],
       // Eliminamos la validación estricta de respuesta para evitar errores con estructuras dinámicas
     }
   }, async (request, reply) => {
@@ -150,20 +169,6 @@ const buildApp = async () => {
     }
   });
 
-  // Middleware to check Admin API Key only
-  const checkAdminApiKey = async (request, reply) => {
-    const apiKey = request.headers['x-api-key'];
-    if (!apiKey) {
-      reply.code(401).send({ error: 'Missing x-api-key header' });
-      return;
-    }
-
-    const adminApiKey = process.env.ADMIN_API_KEY;
-    if (!adminApiKey || apiKey !== adminApiKey) {
-      reply.code(403).send({ error: 'Invalid Admin API Key' });
-      return;
-    }
-  };
 
   // Middleware/Hook to check API Key and instanceId for protected routes
   const checkApiKey = async (request, reply) => {
