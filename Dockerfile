@@ -25,5 +25,5 @@ ENV PORT=3000
 ENV HEADLESS=true
 ENV NODE_ENV=production
 
-# Comando para iniciar la aplicación ejecutando migraciones primero
-CMD ["/bin/sh", "-c", "npx prisma migrate deploy && node src/index.js"]
+# Comando para iniciar la aplicación sincronizando el esquema directamente (sin migraciones)
+CMD ["/bin/sh", "-c", "npx prisma db push && node src/index.js"]
