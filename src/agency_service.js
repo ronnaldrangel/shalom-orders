@@ -31,7 +31,7 @@ class AgencyService {
 
     async getAgencies() {
         // Check cache first
-        if (false && this.redisClient) {
+        if (this.redisClient) {
             try {
                 const cachedData = await this.redisClient.get('agencies_list');
                 if (cachedData) {
@@ -115,7 +115,7 @@ class AgencyService {
             }
 
             // Cache the result
-            if (false && this.redisClient) {
+            if (this.redisClient) {
                 try {
                     const ttl = parseInt(process.env.CACHE_TTL) || 300; // Default 5 minutes
                     // ioredis syntax: set(key, value, 'EX', ttl)
