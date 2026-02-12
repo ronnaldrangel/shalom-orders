@@ -3,8 +3,6 @@ const { chromium } = require('playwright');
 class AgencyService {
     constructor() {
         this.browser = null;
-        this.context = null;
-        this.page = null;
         this.processing = false;
         this.redisClient = null;
     }
@@ -29,35 +27,11 @@ class AgencyService {
         });
         
         console.log('Agency Service Browser launched');
-
-        this.context = await this.browser.newContext({
-             userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        });
-
-        this.page = await this.context.newPage();
-        
-        // Block unnecessary resources to speed up
-        await this.page.route('**/*', route => {
-            const type = route.request().resourceType();
-            if (['image', 'stylesheet', 'font', 'media'].includes(type)) {
-                route.abort();
-            } else {
-                route.continue();
-            }
-        });
-        
-        // Log specific API calls for monitoring (optional)
-        this.page.on('response', response => {
-            const url = response.url();
-            if (url.includes('agencias/listar') && response.request().method() === 'POST') {
-                // console.log(`[DEBUG] Agencies loaded from: ${url}`);
-            }
-        });
     }
 
     async getAgencies() {
         // Check cache first
-        if (this.redisClient) {
+        if (false && this.redisClient) {
             try {
                 const cachedData = await this.redisClient.get('agencies_list');
                 if (cachedData) {
@@ -75,6 +49,9 @@ class AgencyService {
         }
 
         this.processing = true;
+        let context = null;
+        let page = null;
+        let responseHandler = null;
 
         try {
             // Ensure browser is alive
@@ -82,10 +59,25 @@ class AgencyService {
                 await this.initialize();
             }
 
+            console.log('Creating new context and page...');
+            context = await this.browser.newContext({
+                 userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            });
+
+            page = await context.newPage();
+            
+            // Block unnecessary resources to speed up
+            await page.route('**/*', route => {
+                const type = route.request().resourceType();
+                if (['image', 'stylesheet', 'font', 'media'].includes(type)) {
+                    route.abort();
+                } else {
+                    route.continue();
+                }
+            });
+
             console.log('Navigating to agencias.shalom.pe...');
             
-            let responseHandler = null;
-
             // SETUP RESPONSE INTERCEPTION
             const apiResponsePromise = new Promise((resolve, reject) => {
                 const timeout = setTimeout(() => {
@@ -109,11 +101,11 @@ class AgencyService {
                     }
                 };
 
-                this.page.on('response', responseHandler);
+                page.on('response', responseHandler);
             });
 
             // We use goto to trigger the load.
-            await this.page.goto('https://agencias.shalom.pe/', { waitUntil: 'domcontentloaded', timeout: 60000 });
+            await page.goto('https://agencias.shalom.pe/', { waitUntil: 'domcontentloaded', timeout: 60000 });
 
             console.log('Waiting for agency API response...');
             const apiResult = await apiResponsePromise;
@@ -123,7 +115,7 @@ class AgencyService {
             }
 
             // Cache the result
-            if (this.redisClient) {
+            if (false && this.redisClient) {
                 try {
                     const ttl = parseInt(process.env.CACHE_TTL) || 300; // Default 5 minutes
                     // ioredis syntax: set(key, value, 'EX', ttl)
@@ -144,10 +136,19 @@ class AgencyService {
             }
             throw error;
         } finally {
-             // Cleanup listener
-             if (this.page && responseHandler) {
-                this.page.off('response', responseHandler);
+            // Cleanup listener
+            if (page && responseHandler) {
+                page.off('response', responseHandler);
             }
+            
+            // Close page and context to free resources
+            if (page) {
+                await page.close().catch(e => console.error('Error closing page:', e.message));
+            }
+            if (context) {
+                await context.close().catch(e => console.error('Error closing context:', e.message));
+            }
+
             this.processing = false;
         }
     }
